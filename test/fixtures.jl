@@ -4,6 +4,12 @@
 const TEST_DATA_DIR = joinpath(@__DIR__, "data")
 const SAMPLE_INPUT_PATH = joinpath(TEST_DATA_DIR, "sample_input.tglf")
 
+# A small, self-contained IMAS `dd` with both equilibrium and core_profiles,
+# used to exercise the `dd`-based input constructors (InputTGLF/InputCGYRO/
+# InputTGLFEP) without pulling in FUSE. Copied verbatim from IMASdd's
+# `sample/omas_sample.json`.
+const SAMPLE_DD_PATH = joinpath(TEST_DATA_DIR, "sample_dd.json")
+
 # Known good model filenames for testing
 const TEST_MODEL_SINGLE = "sat3_em_d3d_azf-1"
 const TEST_MODEL_ENSEMBLE = "sat3_em_d3d_azf-1"  # This is an ensemble model
@@ -36,6 +42,34 @@ const EXPECTED_LOAD_VALUES = (
 # Load sample InputTGLF
 function load_sample_input()
     TurbulentTransport.load(InputTGLF(), SAMPLE_INPUT_PATH)
+end
+
+# Load the sample IMAS `dd` and select a valid global time. IMAS is reached via
+# the TurbulentTransport namespace so no extra test-project dependency is needed.
+function load_sample_dd()
+    dd = TurbulentTransport.IMAS.IMASdd.json2imas(SAMPLE_DD_PATH; show_warnings=false)
+    if !isempty(dd.equilibrium.time)
+        dd.global_time = dd.equilibrium.time[end]
+    end
+    return dd
+end
+
+# Run `f()` with a throwaway `sacct` shim on PATH so the SLURM-polling helpers
+# can be exercised without a real scheduler. The emitted job State is `state`;
+# pass "__FAIL__" to make the shim exit non-zero (exercising the catch path).
+function with_fake_sacct(f, state::AbstractString)
+    mktempdir() do bin
+        shim = joinpath(bin, "sacct")
+        open(shim, "w") do io
+            println(io, "#!/usr/bin/env bash")
+            println(io, "if [ \"\$FAKE_SACCT_STATE\" = \"__FAIL__\" ]; then exit 1; fi")
+            println(io, "printf '%s\\n' \"\$FAKE_SACCT_STATE\"")
+        end
+        chmod(shim, 0o755)
+        withenv("PATH" => bin * ":" * get(ENV, "PATH", ""), "FAKE_SACCT_STATE" => state) do
+            f()
+        end
+    end
 end
 
 # Helper function to generate valid test input for a model
@@ -278,6 +312,15 @@ const EXPECTED_WITHNEGD_GKNN_EDGE = [
 # ============================================
 
 const TEST_FINN_MODEL = "finn_sat3_d3d_withnegD"
+
+# ============================================
+# ModeID Test Constants
+# ============================================
+
+const TEST_MODEID_MODEL = "modeid_qlgyro_sat3_azf-1"
+const MODEID_N_INPUTS = 34
+const MODEID_N_CLASSES = 5
+const MODEID_YNAMES = ["ETG", "ITG", "KBM", "MTM", "TEM"]  # alphabetical order
 
 # Midpoint of training bounds input → expected outputs
 # Captured 2026-04-01. ynames order: RLNS_1, RLNS_2, RLTS_1, RLTS_2, VEXB_SHEAR

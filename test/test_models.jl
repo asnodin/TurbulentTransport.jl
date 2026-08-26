@@ -1,5 +1,6 @@
 using Dates
 import Flux
+import SHA
 
 @testset "Model Loading" begin
     @testset "available_models" begin
@@ -134,6 +135,145 @@ import Flux
         # repr should also work
         @test !isempty(repr(MIME"text/plain"(), ensemble))
         @test !isempty(repr(MIME"text/plain"(), model))
+    end
+
+    @testset "register_model_path!" begin
+        saved = copy(TurbulentTransport._MODEL_SEARCH_PATHS)
+        try
+            mktempdir() do tmpdir
+                TurbulentTransport.register_model_path!(tmpdir)
+                @test first(TurbulentTransport._MODEL_SEARCH_PATHS) == tmpdir
+
+                # prepend=false appends to end
+                tmpdir2 = mktempdir()
+                TurbulentTransport.register_model_path!(tmpdir2; prepend=false)
+                @test last(TurbulentTransport._MODEL_SEARCH_PATHS) == tmpdir2
+            end
+        finally
+            empty!(TurbulentTransport._MODEL_SEARCH_PATHS)
+            append!(TurbulentTransport._MODEL_SEARCH_PATHS, saved)
+        end
+    end
+
+    @testset "resolve_model_path" begin
+        # Absolute path to existing file
+        path = TurbulentTransport.resolve_model_path("sat0_em_d3d")
+        @test isfile(path)
+        @test endswith(path, ".bson")
+
+        # Direct file path resolves immediately
+        @test TurbulentTransport.resolve_model_path(path) == path
+
+        # Nonexistent model throws
+        @test_throws ErrorException TurbulentTransport.resolve_model_path("nonexistent_zzz")
+    end
+
+    @testset "Git LFS pointer detection" begin
+        mktempdir() do tmpdir
+            pointer = joinpath(tmpdir, "pointer.bson")
+            write(pointer, "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 1\n")
+            real = joinpath(tmpdir, "real.bson")
+            write(real, 0x01)
+
+            @test TurbulentTransport.is_lfs_pointer(pointer)
+            @test !TurbulentTransport.is_lfs_pointer(real)
+        end
+    end
+
+    @testset "LFS pointer parsing" begin
+        mktempdir() do tmpdir
+            good = joinpath(tmpdir, "good.bson")
+            write(good,
+                "version https://git-lfs.github.com/spec/v1\n" *
+                "oid sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" *
+                "size 42\n")
+            info = TurbulentTransport._lfs_pointer_info(good)
+            @test info !== nothing
+            @test info.oid == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            @test info.size == 42
+
+            bad = joinpath(tmpdir, "bad.bson")
+            write(bad, "version https://git-lfs.github.com/spec/v1\nbogus\n")
+            @test TurbulentTransport._lfs_pointer_info(bad) === nothing
+        end
+    end
+
+    @testset "_sha256_of_file matches SHA.sha256" begin
+        mktempdir() do tmpdir
+            blob = rand(UInt8, 1024)
+            f = joinpath(tmpdir, "blob.bin")
+            write(f, blob)
+            @test TurbulentTransport._sha256_of_file(f) == bytes2hex(SHA.sha256(blob))
+        end
+    end
+
+    @testset "_lfs_media_url default (GitHub) vs override" begin
+        old = TurbulentTransport._LFS_URL_OVERRIDE[]
+        try
+            # With no override, builds the media.githubusercontent.com LFS URL.
+            TurbulentTransport._LFS_URL_OVERRIDE[] = nothing
+            url = TurbulentTransport._lfs_media_url("abc123", "models/foo/bar.pt")
+            @test occursin("media.githubusercontent.com", url)
+            @test occursin("ProjectTorreyPines/TurbulentTransport.jl", url)
+            @test endswith(url, "abc123/models/foo/bar.pt")
+
+            # With an override installed, it is used verbatim instead.
+            TurbulentTransport._LFS_URL_OVERRIDE[] = (ref, rel) -> "file:///$(ref)/$(rel)"
+            @test TurbulentTransport._lfs_media_url("r", "p") == "file:///r/p"
+        finally
+            TurbulentTransport._LFS_URL_OVERRIDE[] = old
+        end
+    end
+
+    @testset "ensure_model_file! materializes via SHA-verified override" begin
+        # Use a `file://` URL override so the test is hermetic (no network).
+        # Two refs are exposed: "bad_ref" serves wrong bytes, "good_ref" serves
+        # the real payload. The cascade tries both; only the SHA-matching one
+        # may replace the pointer in place.
+        mktempdir() do tmpdir
+            payload = rand(UInt8, 257)
+            oid = bytes2hex(SHA.sha256(payload))
+            wrong = copy(payload)
+            wrong[end] ⊻= 0xFF
+
+            target = joinpath(tmpdir, "foo.bson")
+            write(target,
+                "version https://git-lfs.github.com/spec/v1\n" *
+                "oid sha256:$oid\n" *
+                "size $(length(payload))\n")
+            @test TurbulentTransport.is_lfs_pointer(target)
+
+            good_blob = joinpath(tmpdir, "good.blob")
+            bad_blob = joinpath(tmpdir, "bad.blob")
+            write(good_blob, payload)
+            write(bad_blob, wrong)
+
+            url_map = Dict("good_ref" => "file://" * good_blob,
+                           "bad_ref"  => "file://" * bad_blob)
+            TurbulentTransport._LFS_URL_OVERRIDE[] = (ref, _rel) ->
+                get(url_map, String(ref), "file:///does/not/exist")
+
+            try
+                # Only bad ref available → SHA mismatch on every candidate → error.
+                ENV["TURBULENTTRANSPORT_MODELS_REF"] = "bad_ref"
+                @test_throws ErrorException TurbulentTransport.ensure_model_file!(target)
+                @test TurbulentTransport.is_lfs_pointer(target)  # untouched
+
+                # Good ref available → materializes, file replaced in place.
+                ENV["TURBULENTTRANSPORT_MODELS_REF"] = "good_ref"
+                returned = TurbulentTransport.ensure_model_file!(target)
+                @test returned == target
+                @test !TurbulentTransport.is_lfs_pointer(target)
+                @test read(target) == payload
+                @test TurbulentTransport._sha256_of_file(target) == oid
+
+                # Idempotent: real file → no-op.
+                @test TurbulentTransport.ensure_model_file!(target) == target
+            finally
+                delete!(ENV, "TURBULENTTRANSPORT_MODELS_REF")
+                TurbulentTransport._LFS_URL_OVERRIDE[] = nothing
+            end
+        end
     end
 end
 

@@ -15,7 +15,7 @@ Base.@kwdef mutable struct InputCGYRO
     S::Union{Float64,Missing} = missing
     BTCCW::Union{Float64,Missing} = missing
     IPCCW::Union{Float64,Missing} = missing
-    UDSYMMETRY_FLAG::Union{Float64,Missing} = missing
+    UDSYMMETRY_FLAG::Union{Int,Missing} = missing
 
     SHAPE_COS0::Union{Float64,Missing} = missing
     SHAPE_S_COS0::Union{Float64,Missing} = missing
@@ -40,8 +40,8 @@ Base.@kwdef mutable struct InputCGYRO
     BETAE_UNIT::Union{Float64,Missing} = missing
     BETAE_UNIT_SCALE::Union{Float64,Missing} = missing
     BETA_STAR_SCALE::Union{Float64,Missing} = missing
-    LAMBDA_DEBYE::Union{Float64,Missing} = missing
-    LAMBDA_DEBYE_SCALE::Union{Float64,Missing} = missing
+    LAMBDA_STAR::Union{Float64,Missing} = missing
+    LAMBDA_STAR_SCALE::Union{Float64,Missing} = missing
 
     N_RADIAL::Union{Int,Missing} = missing
     BOX_SIZE::Union{Int,Missing} = missing

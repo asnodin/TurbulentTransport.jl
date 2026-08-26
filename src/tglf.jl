@@ -1,7 +1,8 @@
 function Base.show(io::IO, ::MIME"text/plain", input_tglf::InputTGLF)
     for fname in sort!(collect(fieldnames(typeof(input_tglf))))
         value = getfield(input_tglf, fname)
-        if value !== missing && (!isdigit(string(fname)[end]) || (isdigit(string(fname)[end]) && parse(Int, split(string(fname), "_")[end]) <= input_tglf.NS))
+        species_idx = tryparse(Int, split(string(fname), "_")[end])
+        if value !== missing && (species_idx === nothing || species_idx <= input_tglf.NS)
             println(io, "$fname = $(value)")
         end
     end
@@ -219,7 +220,7 @@ function InputTGLF(
         end
     end
 
-    press = cp1d.pressure_thermal
+    press = cp1d.pressure
     Pa_to_dyn = 10.0
 
     dpdr = @views IMAS.gradient(rmin, press)[gridpoint_cp] .* Pa_to_dyn
@@ -274,110 +275,25 @@ function InputTGLF(
 end
 
 """
-    load(input_tglf::InputTGLF, filename::AbstractString)
+    gacode_preamble() -> String
 
-Reads filename (`input.tglf` or `input.tglf.gen` format) and populates input_tglf.
-Returns the mutated `input_tglf`.
+Return a shell preamble that sources the GACODE environment on NERSC Perlmutter.
+Returns an empty string on non-NERSC systems where GACODE is assumed to be in PATH.
 """
-function load(input_tglf::InputTGLF, filename::String)
-    # Read non-empty, stripped lines
-    lines = open(filename, "r") do file
-        filter(x -> !isempty(x), map(strip, split(read(file, String), "\n")))
+function gacode_preamble()
+    if get(ENV, "NERSC_HOST", "") == "perlmutter"
+        gacode_root = get(ENV, "GACODE_ROOT_CPU", "")
+        isempty(gacode_root) && error("Environment variable GACODE_ROOT_CPU is not set. " *
+            "Set it to your CPU GACODE installation path, e.g. export GACODE_ROOT_CPU=/path/to/gacode")
+        gacode_platform = "PERLMUTTER_CPU"
+        return """
+        export GACODE_ROOT=$gacode_root
+        export GACODE_PLATFORM=$gacode_platform
+        . \${GACODE_ROOT}/shared/bin/gacode_setup 2>/dev/null
+        . \${GACODE_ROOT}/platform/env/env.\${GACODE_PLATFORM} 2>/dev/null
+        """
     end
-
-    # Build raw dictionary of Symbol=>String values
-    ip_dict = Dict{Symbol,String}()
-    if all(l -> occursin("=", l), lines)
-        for line in lines
-            field, value = map(strip, split(line, "="))
-            ip_dict[Symbol(field)] = value
-        end
-    elseif all(l -> occursin("  ", l), lines)
-        for line in lines
-            value, field = map(strip, split(line, "  "))
-            ip_dict[Symbol(field)] = value
-        end
-    else
-        error("invalid input.tglf or input.tglf.gen file")
-    end
-
-    # Helper to unwrap Union{Missing,T} or UnionAll versions into T
-    _unwrap_missing(::Type{Missing}) = Missing
-    function _unwrap_missing(ft)::Type
-        if ft isa Union
-            parts = Base.uniontypes(ft)
-            rs = filter(!=(Missing), parts)
-            return length(rs) == 1 ? rs[1] : ft
-        elseif ft isa UnionAll
-            inner = Base.unwrap_unionall(ft)
-            return inner === ft ? ft : _unwrap_missing(inner)
-        else
-            return ft
-        end
-    end
-
-    # Use concrete instantiation so parametric T resolves (e.g., T=Float64)
-    cfield_types = fieldtypes(typeof(input_tglf))
-    fnames = fieldnames(typeof(input_tglf))
-
-    for (idx, fname) in enumerate(fnames)
-        fname ∈ keys(ip_dict) || continue
-        raw = ip_dict[fname]
-        ftype = _unwrap_missing(cfield_types[idx])
-
-        # Boolean handling (.true./.false., true/false, T/F)
-        lraw = lowercase(raw)
-        if lraw in (".true.", "true") || raw == "T"
-            setproperty!(input_tglf, fname, true)
-            continue
-        elseif lraw in (".false.", "false") || raw == "F"
-            setproperty!(input_tglf, fname, false)
-            continue
-        end
-
-        # Strings
-        if ftype <: AbstractString
-            setproperty!(input_tglf, fname, raw)
-            continue
-        end
-
-        # Int
-        if ftype <: Integer
-            val = try
-                Int(round(parse(Float64, raw)))
-            catch
-                error("Could not parse integer field $(fname) = $(raw)")
-            end
-            setproperty!(input_tglf, fname, val)
-            continue
-        end
-
-        # Real (default to Float64)
-        if ftype <: Real
-            val = try
-                parse(Float64, raw)
-            catch
-                error("Could not parse real field $(fname) = $(raw)")
-            end
-            setproperty!(input_tglf, fname, val)
-            continue
-        end
-
-        # Fallback: if still UnionAll referencing Real/Int/Float via string, attempt float parse
-        st = string(ftype)
-        if occursin("Real", st) || occursin("Float", st) || occursin("Int", st)
-            val = try
-                parse(Float64, raw)
-            catch
-                error("Could not parse numeric-like field $(fname) = $(raw)")
-            end
-            setproperty!(input_tglf, fname, val)
-            continue
-        end
-
-        error("parameter $(fname) of type ($(ftype)) not recognized: $(raw)")
-    end
-    return input_tglf
+    return ""
 end
 
 """
@@ -392,10 +308,12 @@ function run_tglf(input_tglf::InputTGLF)
 
     save(input_tglf, joinpath(folder, "input.tglf"))
 
+    preamble = gacode_preamble()
     open(joinpath(folder, "command.sh"), "w") do io
         return write(
             io,
             """
+         $preamble
          if command -v timeout &> /dev/null; then
          	(time (timeout 120 tglf -n 1 -e .)) &> command.log
          else
