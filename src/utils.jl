@@ -110,7 +110,7 @@ function save(input::Union{InputTGLF,InputCGYRO,InputQLGYRO}, filename::Abstract
             end
             try
                 value = getfield(input, key)
-                if ismissing(value)
+                if TJLF.is_unset(value)   # missing, NaN sentinel, or empty string
                     continue
                 elseif isa(value, Int)
                     println(io, "$(key)=$(convert(Int, value))")
@@ -137,6 +137,7 @@ Compares two input_tglfs, prints the difference and stores the difference in a n
 function compare_two_input_tglfs(itp_1::InputTGLF{T}, itp_2::InputTGLF{T}) where {T<:Real}
     itp_diff = InputTGLF{T}()
     for field in fieldnames(typeof(itp_diff))
+        startswith(String(field), "_") && continue   # bookkeeping, not a comparable value
         if typeof(getproperty(itp_1, field)) <: String
             setproperty!(itp_diff, field, getproperty(itp_1, field) * "  " * getproperty(itp_2, field))
         else
@@ -145,9 +146,10 @@ function compare_two_input_tglfs(itp_1::InputTGLF{T}, itp_2::InputTGLF{T}) where
     end
 
     for key in fieldnames(typeof(itp_diff))
+        startswith(String(key), "_") && continue
         itp_1_value = getproperty(itp_1, key)
         itp_diff_value = getproperty(itp_diff, key)
-        if typeof(itp_diff_value) <: String || typeof(itp_diff_value) <: Missing
+        if typeof(itp_diff_value) <: String || TJLF.is_unset(itp_diff_value)
             continue
         end
         println("Difference for $key = $(round(itp_diff_value/itp_1_value*100,digits=2)) % itp_2 = $(itp_diff_value+itp_1_value), itp_1 = $itp_1_value ")
@@ -219,3 +221,12 @@ function parse_out_tglf_gbflux(lines::String; outnames::NTuple{4,String}=("Gam/G
     end
     return out
 end
+
+"""
+    save(input::InputTJLF, filename::AbstractString)
+
+Write an InputTJLF to file (forwards to `TJLF.save`), so callers that hold either an
+InputTGLF or an InputTJLF (e.g. ActorTGLF with model=:TJLF / :QLNN) can use a single
+`TurbulentTransport.save` entry point.
+"""
+save(input::InputTJLF, filename::AbstractString) = TJLF.save(input, filename)

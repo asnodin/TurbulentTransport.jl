@@ -139,14 +139,14 @@ function tglf_to_cgyro(input_tglf::InputTGLF)
             sym = Symbol("$(prefix)$m")
             sym in cgyro_fields || continue
             val = getproperty(input_tglf, sym)
-            ismissing(val) || setproperty!(ic, sym, val)
+            TJLF.is_unset(val) || setproperty!(ic, sym, val)
         end
     end
     for prefix in ("SHAPE_SIN", "SHAPE_S_SIN")
         sym = Symbol("$(prefix)3")
         sym in cgyro_fields || continue
         val = getproperty(input_tglf, sym)
-        ismissing(val) || setproperty!(ic, sym, val)
+        TJLF.is_unset(val) || setproperty!(ic, sym, val)
     end
 
     # Magnetic shear conversion:
@@ -183,7 +183,7 @@ function tglf_to_cgyro(input_tglf::InputTGLF)
     # TGLF: VEXB_SHEAR = -(r/q)*(d omega_0/d r) * (a/c_s) (in units_in=GYRO)
     # CGYRO: GAMMA_E = -(r/q)*(d omega_0/d r) * (a/c_s)
     # So GAMMA_E = VEXB_SHEAR for GYRO units
-    if !ismissing(input_tglf.VEXB_SHEAR) && input_tglf.VEXB_SHEAR != 0.0
+    if !TJLF.is_unset(input_tglf.VEXB_SHEAR) && input_tglf.VEXB_SHEAR != 0.0
         ic.GAMMA_E = input_tglf.VEXB_SHEAR
     end
 
@@ -455,7 +455,7 @@ function generate_ky_grid(input_tglf::InputTGLF; nky::Int=0, ky::Float64=0.0, ky
         # Delegate to TJLF's get_ky_spectrum for models 1-4
         nky_total = TJLF.get_ky_spectrum_size(nky_in, model)
         input_tjlf = InputTJLF{Float64}(input_tglf.NS, nky_total)
-        TJLF.update_input_tjlf!(input_tjlf, input_tglf)
+        TJLF.update_input_tjlf!(input_tjlf, tjlf_compatible(input_tglf))
         input_tjlf.KYGRID_MODEL = model
         input_tjlf.NKY = nky_in
 
@@ -1292,11 +1292,11 @@ function qlgyro_from_tglf(input_tglf::InputTGLF)
     input_qlgyro = InputQLGYRO()
     input_qlgyro.NKY = input_tglf.NKY
     input_qlgyro.KYGRID_MODEL = input_tglf.KYGRID_MODEL
-    if !ismissing(input_tglf.KY)
+    if !TJLF.is_unset(input_tglf.KY)
         input_qlgyro.KY = Float64(input_tglf.KY)
     end
     input_qlgyro.SAT_RULE = input_tglf.SAT_RULE
-    input_qlgyro.GAMMA_E = ismissing(input_tglf.VEXB_SHEAR) ? 0.0 : Float64(input_tglf.VEXB_SHEAR)
+    input_qlgyro.GAMMA_E = TJLF.is_unset(input_tglf.VEXB_SHEAR) ? 0.0 : Float64(input_tglf.VEXB_SHEAR)
     return input_qlgyro
 end
 

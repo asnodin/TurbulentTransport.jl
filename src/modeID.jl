@@ -196,14 +196,14 @@ function run_modeid_nn(dd::IMAS.dd, rho_transport::AbstractVector{<:Real};
                 # Log10-transformed feature: get base parameter and apply log10
                 base_name = _LOG10_FEATURES[xname]
                 val = getfield(it, Symbol(base_name))
-                if ismissing(val)
-                    error("ModeID input field '$base_name' is Missing at rho=$rho")
+                if TJLF.is_unset(val)
+                    error("ModeID input field '$base_name' is unset (missing/NaN) at rho=$rho")
                 end
                 inputs[j, i] = Float32(log10(max(Float64(val), 1e-10)))
             else
                 val = getfield(it, Symbol(xname))
-                if ismissing(val)
-                    error("ModeID input field '$xname' is Missing at rho=$rho")
+                if TJLF.is_unset(val)
+                    error("ModeID input field '$xname' is unset (missing/NaN) at rho=$rho")
                 end
                 inputs[j, i] = Float32(val)
             end
@@ -329,7 +329,7 @@ function run_modeid_qlnn(dd::IMAS.dd, rho_transport::AbstractVector{<:Real};
     if hasproperty(input_tglfs, :tglfs)
         input_tglfs = input_tglfs.tglfs
     end
-    input_tjlfs = InputTJLF{Float64}[InputTJLF{Float64}(input_tglfs[k]) for k in eachindex(rho_transport)]
+    input_tjlfs = InputTJLF{Float64}[to_input_tjlf(input_tglfs[k]) for k in eachindex(rho_transport)]
     return run_modeid_qlnn(input_tjlfs;
         bundle_name, warn_nn_train_bounds, stability_threshold,
         em_threshold, ion_electron_threshold, ky_etg)

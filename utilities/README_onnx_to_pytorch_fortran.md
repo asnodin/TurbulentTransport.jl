@@ -104,15 +104,16 @@ module tglf_torchscript
   type(torch_model), save :: model
 
   ! Tensors to use in torch
-  ! models require 1 array of inputs per evaluation (n_in = 1)
-  ! models output both mean and variance (n_out = 2)
+  ! n_in / n_out are FTorch tensor counts, not batch size:
+  ! one input array per call, two outputs (mean and variance).
   integer, parameter :: n_in = 1, n_out = 2
   type(torch_tensor), dimension(n_in),  save :: input_tensor
   type(torch_tensor), dimension(n_out), save :: output_tensor
 
   ! Arrays to use in Fortran (input_array, output_mean, output_var)
-  ! Note that we need to use 2D arrays that are of shape (1,:) to conform with
-  ! the traced model.
+  ! First index is batch. This example uses n = 1, so shape (1,:).
+  ! The trace accepts (n, n_in); a profile of points in one call is
+  ! much cheaper per point than looping this scalar path.
   integer, parameter :: in_dims = 2     ! dimensions
   integer :: layout(in_dims) = [1,2] ! array dimension ordering
   real (wp), allocatable, dimension(:,:), target :: input_array
@@ -136,7 +137,9 @@ module tglf_torchscript
       call torch_model_load(model, "committee.pt", torch_kCPU)
 
       ! Allocate input and output arrays
-      allocate(input_array(1,input_size))
+      ! First dim = 1 is a single point. For a profile, use (n, input_size)
+      ! / (n, output_size) and rebuild the tensors once for that n.
+      allocate(input_array(1,input_size)) ! single batch
       allocate(output_mean(1,output_size), output_var(1,output_size))
 
       ! Set up pointers to inputs and outputs
@@ -153,7 +156,8 @@ module tglf_torchscript
       real, dimension(:), intent(in)  :: input
       real, dimension(:), intent(out) :: output
 
-      ! Copy inputs
+      ! Copy one point into row 1. Looping this is the slow path;
+      ! pass a rank-2 (n, n_in) array instead if you have many points.
       input_array(1,:) = input
 
       ! Call traced model
@@ -181,8 +185,8 @@ program call_tglf_torchscript
   real, allocatable, dimension(:) :: model_input  ! Need not be single
   real, allocatable, dimension(:) :: model_output ! precision reals.
 
-  allocate(model_input(in_size))
-  allocate(model_output(4))      ! 4 Fluxes returned
+  allocate(model_input(in_size))  ! single point
+  allocate(model_output(4))       ! 4 Fluxes returned
 
   call setup_model(in_size)
 
